@@ -1,0 +1,26 @@
+{
+  "name": "hanabi-ttt",
+  "version": "0.0.0",
+  "description": "Online Hanabi with customizable game rules, AI, and game analysis.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git://github.com/VerUltimus/hanabi-ttt.git"
+  },
+  "keywords": [
+    "hanabi"
+  ],
+  "author": "Cheng Xing",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/VerUltimus/hanabi-ttt/issues"
+  },
+  "homepage": "https://github.com/VerUltimus/hanabi-ttt",
+  "dependencies": {
+    "socket.io": "~1.2.1",
+    "express": "~4.10.7"
+  }
+}
