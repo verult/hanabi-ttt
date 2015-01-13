@@ -9,11 +9,14 @@ module.exports = function(api) {
     ALLOWED_PLAYERS = 4;
     CARDS_PER_HAND = 4;
 
-    var room_state = 'waiting';
+    var room_state = 'waiting'; // waiting, in progress, win, lose
     var connected_players = 0;
     var avail_player_id = 0;
     var drawing_deck, player_hands, discard_pile, play_pile;
-    var turn, hint_count, fuse_count; // value equal to a player ID.
+    var turn; // incremented every time a player completes an action.
+              // Math.floor(turn / ALLOWED_PLAYERS) = # of turn loops
+              // turn % ALLOWED_PLAYERS = id of the player at the current turn.
+    var hint_count, fuse_count; // value equal to a player ID.
 
     function start_game() {
         drawing_deck = generate_deck('regular');
@@ -62,20 +65,14 @@ module.exports = function(api) {
         return hands;
     }
 
-    function advance_turn() {
-        if (turn == ALLOWED_PLAYERS - 1)
-            turn = 0;
-        else
-            turn++;
-    }
-
     /**
      * Checks if the card played is correct, i.e. belongs in the played pile
      */
     function is_play_correct(card) {
-        if (card.suit in play_pile.pile)
-            return play_pile.pile[card.suit]+1 == card.number;
-        else
+        if (card.suit in play_pile.pile) {
+            var pile = play_pile.pile[card.suit];
+            return pile[pile.length-1]+1 == card.number;
+        } else
             return card.number == 1;
     }
 
@@ -107,7 +104,8 @@ module.exports = function(api) {
         },
 
         discard: function(player_id, card_id) {
-            if (room_state != 'in progress' || turn != player_id)
+            if (room_state != 'in progress' || 
+                turn % ALLOWED_PLAYERS != player_id)
                 return -1;
             if (card_id < 0 || card_id >= CARDS_PER_HAND)
                 return -1;
@@ -118,24 +116,26 @@ module.exports = function(api) {
             draw_next_card(hand, card_id);
             hint_count++;
 
-            advance_turn();
+            turn++;
             // update()
         },
 
         hint: function(player_id, hint) {
-            if (room_state != 'in progress' || turn != player_id)
+            if (room_state != 'in progress' || 
+                turn % ALLOWED_PLAYERS != player_id)
                 return -1;
 
             if (hint_count == 0) return -1;
             // broadcast hint
             hint_count--;
 
-            advance_turn();
+            turn++;
             // update()
         },
 
         play: function(player_id, card_id) {
-            if (room_state != 'in progress' || turn != player_id)
+            if (room_state != 'in progress' || 
+                turn % ALLOWED_PLAYERS != player_id)
                 return -1;
             if (card_id < 0 || card_id >= CARDS_PER_HAND)
                 return -1;
@@ -143,14 +143,49 @@ module.exports = function(api) {
             var hand = player_hands[player_id];
             if (is_play_correct(hand[card_id])) {
                 play_pile.add(hand[card_id]);
+                if (hand[card_id].number == 5 && hint_count < 8)
+                    hint_count++;
             } else {
                 discard_pile.add(hand[card_id]);
                 fuse_count--;
             }
             draw_next_card(hand, card_id);
 
-            advance_turn();
+            turn++;
             // update()
+        },
+
+        /**
+         * player_id specifies which player's perspective to return,
+         * i.e. all player hands are returned except the player's.
+         *
+         * Can only be called when the game is in progress.
+         */
+        json: function(player_id) {
+            if (room_state == 'in progress') {
+                var hands = {};
+
+                for (var i = 0; i < ALLOWED_PLAYERS; i++)
+                    hands[i] = player_hands[i];
+                if (player_id != undefined)
+                    // TODO: what if the given player_id is not valid?
+                    delete hands[player_id];
+
+                return JSON.stringify({
+                    visible_hands: hands,
+                    discard: discard_pile.pile,
+                    play: play_pile.pile,
+                    hint_count: hint_count,
+                    fuse_count: fuse_count,
+                    turn_count: Math.floor(turn / ALLOWED_PLAYERS),
+                    player_turn: turn % ALLOWED_PLAYERS
+                }, undefined, 2); // last two parameters only necessary for pretty printing.
+            } else if (room_state == 'win' || room_state == 'lose') {
+                // TODO implement
+                return "Game is complete.";
+            } else { // room_state == 'waiting'
+                return "Game has not begun.";
+            }
         }
 
     };
