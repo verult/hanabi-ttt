@@ -8,17 +8,35 @@ module.exports = function(api) {
 
     ALLOWED_PLAYERS = 4;
     CARDS_PER_HAND = 4;
+    NUM_SUITS = 5;
 
-    var room_state = 'waiting'; // waiting, in progress, win, lose
-    var connected_players = 0;
+    var room_state = 'waiting'; // waiting, in progress, end
+
+    /* Connection states */
+    var players = {};
     var avail_player_id = 0;
+    var ready_count = 0;
+
+    /* Game progression states */
     var drawing_deck, player_hands, discard_pile, play_pile;
     var turn; // incremented every time a player completes an action.
               // Math.floor(turn / ALLOWED_PLAYERS) = # of turn loops
               // turn % ALLOWED_PLAYERS = id of the player at the current turn.
     var hint_count, fuse_count; // value equal to a player ID.
+    var completed_suits;
+
+    /* Game ending states */
+    var ending_player;
+    var score;
 
     function start_game() {
+        // Reset "waiting" states
+        ready_count = 0;
+        for (var player_id in players)
+            players[player_id].ready = false;
+
+        // Initialize "in progress" states
+        room_state = 'in progress';
         drawing_deck = generate_deck('regular');
         player_hands = distribute_cards();
         discard_pile = CardPile();
@@ -26,6 +44,16 @@ module.exports = function(api) {
         turn = 0;
         hint_count = 8;
         fuse_count = 3;
+        completed_suits = [];
+        ending_player = -1;
+        score = 0;
+
+        // Signal clients that game has started.
+        var all_data = {};
+        for (var player_id in players) {
+            all_data[player_id] = to_json(player_id);
+        }
+        api.start(all_data);
     }
 
     /**
@@ -76,8 +104,73 @@ module.exports = function(api) {
             return card.number == 1;
     }
 
+    /**
+     * When the last card is drawn, a call to this function will not draw
+     * another card, and when the last player who drew the last card tries to
+     * draw again, the game ends.
+     */
     function draw_next_card(hand, card_id) {
-        hand[card_id] = drawing_deck.shift();
+        if (ending_player == -1) {
+            hand[card_id] = drawing_deck.shift();
+            if (drawing_deck.length == 0)
+                ending_player = turn % ALLOWED_PLAYERS;
+        } else if (turn % ALLOWED_PLAYERS == ending_player)
+            // Ending condition 2:
+            // Drawing deck empty, player who draws card last gets to play
+            // one more turn.
+            end_game();
+    }
+
+    function update() {
+        var all_data = {};
+        for (var player_id in players) {
+            all_data[player_id] = to_json(player_id);
+        }
+        api.update(all_data);
+    }
+
+    function end_game() {
+        room_state = 'end';
+
+        // Count score
+        score = _.reduce(play_pile.pile, function(memo, pile, suit) {
+            return memo + pile[pile.length-1];
+        }, 0);
+    }
+
+    // Experiment: pass objects as they are instead of stringifying them.
+    function to_json(player_id) {
+        if (room_state == 'in progress') {
+            var hands = {};
+
+            for (var i = 0; i < ALLOWED_PLAYERS; i++)
+                hands[i] = player_hands[i];
+            if (player_id != undefined)
+                // TODO: what if the given player_id is not valid?
+                delete hands[player_id];
+
+            return {
+                visible_hands: hands,
+                discard: discard_pile.pile,
+                play: play_pile.pile,
+                hint_count: hint_count,
+                fuse_count: fuse_count,
+                turn_count: Math.floor(turn / ALLOWED_PLAYERS),
+                player_turn: turn % ALLOWED_PLAYERS
+            }
+        } else if (room_state == 'end') {
+            return {
+                all_hands: player_hands,
+                discard: discard_pile.pile,
+                play: play_pile.pile,
+                hint_count: hint_count,
+                fuse_count: fuse_count,
+                turn_count: Math.floor((turn - 1) / ALLOWED_PLAYERS),
+                score: score
+            }
+        } else { // room_state == 'waiting'
+            return players;
+        }
     }
 
     return {
@@ -86,12 +179,14 @@ module.exports = function(api) {
          * A client connects. Returns a player ID.
          */
         connect: function() {
-            if (room_state == 'waiting') {
-                if (++connected_players == ALLOWED_PLAYERS) {
-                    room_state = 'in progress';
-                    start_game();
-                }
-                return avail_player_id++;
+            if (room_state == 'waiting' && 
+                _.size(players) < ALLOWED_PLAYERS) {
+                var new_id = avail_player_id;
+                players[new_id] = {
+                    ready: false
+                };
+                avail_player_id++;
+                return new_id;
             } else
                 return -1;
         },
@@ -101,6 +196,26 @@ module.exports = function(api) {
          */
         disconnect: function() {
 
+        },
+
+        ready: function(player_id) {
+            if (player_id in players) {
+                players[player_id].ready = true;
+                ready_count++;
+                api.ready_changed(to_json());
+                if (ready_count == ALLOWED_PLAYERS)
+                    start_game();
+            } else 
+                return -1;
+        },
+
+        unready: function(player_id) {
+            if (player_id in players) {
+                players[player_id].ready = false;
+                ready_count--;
+                api.ready_changed(to_json());
+            } else
+                return -1;
         },
 
         discard: function(player_id, card_id) {
@@ -117,7 +232,8 @@ module.exports = function(api) {
             hint_count++;
 
             turn++;
-            // update()
+
+            update();
         },
 
         hint: function(player_id, hint) {
@@ -130,7 +246,8 @@ module.exports = function(api) {
             hint_count--;
 
             turn++;
-            // update()
+
+            update();
         },
 
         play: function(player_id, card_id) {
@@ -141,18 +258,33 @@ module.exports = function(api) {
                 return -1;
 
             var hand = player_hands[player_id];
-            if (is_play_correct(hand[card_id])) {
-                play_pile.add(hand[card_id]);
-                if (hand[card_id].number == 5 && hint_count < 8)
-                    hint_count++;
+            var card = hand[card_id];
+            if (is_play_correct(card)) {
+                play_pile.add(card);
+                if (card.number == 5) {
+                    completed_suits.push(card.suit);
+                    if (completed_suits.length == NUM_SUITS) {
+                        // Ending condition 3:
+                        // All fireworks are complete.
+                        end_game();
+                        return;
+                    }
+                    if (hint_count < 8)
+                        hint_count++;
+                }
             } else {
                 discard_pile.add(hand[card_id]);
                 fuse_count--;
+                if (fuse_count == 0)
+                    // Ending condition 1:
+                    // Fuse is completely burnt up.
+                    end_game();
             }
             draw_next_card(hand, card_id);
 
             turn++;
-            // update()
+
+            update();
         },
 
         /**
@@ -161,32 +293,7 @@ module.exports = function(api) {
          *
          * Can only be called when the game is in progress.
          */
-        json: function(player_id) {
-            if (room_state == 'in progress') {
-                var hands = {};
-
-                for (var i = 0; i < ALLOWED_PLAYERS; i++)
-                    hands[i] = player_hands[i];
-                if (player_id != undefined)
-                    // TODO: what if the given player_id is not valid?
-                    delete hands[player_id];
-
-                return JSON.stringify({
-                    visible_hands: hands,
-                    discard: discard_pile.pile,
-                    play: play_pile.pile,
-                    hint_count: hint_count,
-                    fuse_count: fuse_count,
-                    turn_count: Math.floor(turn / ALLOWED_PLAYERS),
-                    player_turn: turn % ALLOWED_PLAYERS
-                }, undefined, 2); // last two parameters only necessary for pretty printing.
-            } else if (room_state == 'win' || room_state == 'lose') {
-                // TODO implement
-                return "Game is complete.";
-            } else { // room_state == 'waiting'
-                return "Game has not begun.";
-            }
-        }
+        json: to_json
 
     };
 }
