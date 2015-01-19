@@ -136,6 +136,8 @@ module.exports = function(api) {
         score = _.reduce(play_pile.pile, function(memo, pile, suit) {
             return memo + pile[pile.length-1];
         }, 0);
+
+        api.end(to_json());
     }
 
     // Experiment: pass objects as they are instead of stringifying them.
@@ -247,6 +249,7 @@ module.exports = function(api) {
 
             turn++;
 
+            api.hint_update(player_id, hint);
             update();
         },
 

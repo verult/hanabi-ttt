@@ -6,7 +6,6 @@ function controller(view) {
     
     socket.on('connected', function(data) {
         player_id = data.player_id;
-        $('body').append('<p>Player ID = ' + data.player_id + '</p>');
     });
 
     socket.on('start', view.start);
@@ -14,6 +13,8 @@ function controller(view) {
         view.ready_changed(data, player_id);
     });
     socket.on('update', view.update);
+    socket.on('hint_update', view.hint_update);
+    socket.on('end', view.end)
 }
 
 function ready() {
